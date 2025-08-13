@@ -1,7 +1,8 @@
-# app.py — Streamlit (Cloud‑ready) with robust PPTX replacement
+# app.py — Streamlit (Cloud-ready) with robust PPTX replacement
 # - Replaces placeholders even when split across runs/tables/grouped shapes
-# - Supports both {{CURLY}} tokens and legacy X‑style tokens
-# - Adds missing fields: join date, offer date, city, salary formatting
+# - Supports both {{CURLY}} tokens and legacy X-style tokens
+# - Includes Join Date, Offer Date, City, salary formatting
+# - Output file name: "Offer Letter - <Candidate Name>.pptx"
 
 import re
 import os
@@ -23,7 +24,6 @@ MESES_ES = [
 def fecha_es(d: date) -> str:
     return f"{d.day} de {MESES_ES[d.month-1]} de {d.year}"
 
-
 def format_ars_dots(value: str) -> str:
     digits = "".join(ch for ch in str(value) if ch.isdigit())
     if not digits:
@@ -33,12 +33,11 @@ def format_ars_dots(value: str) -> str:
 # Curly placeholders like {{CANDIDATE_NAME}}
 PLACEHOLDER = re.compile(r"{{\s*([A-Z0-9_]+)\s*}}")
 
-# Legacy X‑style tokens from the provided template
+# Legacy X-style tokens from the provided template
 PAT_NAME = re.compile(r"\{X{6}\}")            # {XXXXXX}
 PAT_POS  = re.compile(r"(?<!\{)X{8}(?!\})")   # XXXXXXXX not inside {}
 PAT_DATE = re.compile(r"\bX{2}\s+de\s+X{4,5}\s+de\s+\d{4}\b")
 PAT_SAL  = re.compile(r"\bX\.XXX\.XXX\b")
-
 
 def apply_x_style(text: str, mapping: dict) -> str:
     name = mapping.get("CANDIDATE_NAME")
@@ -64,7 +63,6 @@ def apply_x_style(text: str, mapping: dict) -> str:
         out = f"{offer_date_es}, {city}" if offer_date_es else city
     return out
 
-
 def replace_placeholders_in_text(text: str, mapping: dict) -> str:
     # First resolve {{KEY}} placeholders, then legacy X tokens
     def repl(m):
@@ -76,11 +74,9 @@ def replace_placeholders_in_text(text: str, mapping: dict) -> str:
 # ------------------------------
 # PPTX replacement across runs / tables / groups
 # ------------------------------
-
 def _replace_in_text_frame(tf, mapping: dict):
     for para in tf.paragraphs:
         if not para.runs:
-            # Empty paragraph — still handle legacy line token
             if para.text:
                 new = replace_placeholders_in_text(para.text, mapping)
                 if new != para.text:
@@ -90,18 +86,16 @@ def _replace_in_text_frame(tf, mapping: dict):
         new = replace_placeholders_in_text(full, mapping)
         if new == full:
             continue
-        # Put the new text in the first run, clear the rest to avoid split tokens
+        # Put the new text in the first run, clear the rest (handles split tokens)
         para.runs[0].text = new
         for r in para.runs[1:]:
             r.text = ""
-
 
 def _replace_in_table(tbl, mapping: dict):
     for r in tbl.rows:
         for c in r.cells:
             if c.text_frame:
                 _replace_in_text_frame(c.text_frame, mapping)
-
 
 def _walk_shapes(shapes, mapping: dict):
     for shape in shapes:
@@ -114,7 +108,6 @@ def _walk_shapes(shapes, mapping: dict):
         # Grouped shapes
         if isinstance(shape, GroupShape):
             _walk_shapes(shape.shapes, mapping)
-
 
 def render_pptx(pptx_bytes: bytes, mapping: dict) -> BytesIO:
     prs = Presentation(BytesIO(pptx_bytes))
@@ -131,7 +124,11 @@ def render_pptx(pptx_bytes: bytes, mapping: dict) -> BytesIO:
 st.set_page_config(page_title="Offer Letter Generator", page_icon="📄", layout="centered")
 st.title("Offer Letter Generator")
 
-uploaded_file = st.file_uploader("Upload PPTX Template", type=["pptx"], help="Use placeholders like {{CANDIDATE_NAME}} or legacy X‑tokens")
+uploaded_file = st.file_uploader(
+    "Upload PPTX Template",
+    type=["pptx"],
+    help="Use placeholders like {{CANDIDATE_NAME}} or legacy X-tokens",
+)
 
 col1, col2 = st.columns(2)
 with col1:
@@ -146,6 +143,7 @@ with col2:
 st.subheader("Extra placeholders (optional)")
 extras = st.data_editor([{"key": "", "value": ""}], num_rows="dynamic", hide_index=True)
 
+# ---- Generate & download
 if st.button("Generate Offer Letter", disabled=(uploaded_file is None)):
     if not uploaded_file:
         st.warning("Please upload a PPTX template first.")
@@ -165,18 +163,20 @@ if st.button("Generate Offer Letter", disabled=(uploaded_file is None)):
                 mapping[k.upper()] = v
         try:
             edited = render_pptx(uploaded_file.read(), mapping)
+            safe_name = " ".join((name or "").strip().split())
+            file_name_out = f"Offer Letter - {safe_name}.pptx" if safe_name else "Offer Letter.pptx"
             st.download_button(
                 "Download Updated PPTX",
                 data=edited.getvalue(),
-                file_name="Offer_Letter_Filled.pptx",
+                file_name=file_name_out,
                 mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
             )
-            st.success("Done! Placeholders replaced across text boxes and tables.")
+            st.success(f"Done! Generated {file_name_out} with all placeholders replaced.")
         except Exception as e:
             st.exception(e)
 
 # ------------------------------
-# Self‑tests (so we don't ship regressions)
+# Self-tests (so we don't ship regressions)
 # ------------------------------
 with st.expander("Run self tests"):
     def _t_apply_x():
@@ -215,11 +215,3 @@ with st.expander("Run self tests"):
             st.success("OK — tests passed.")
         except AssertionError as e:
             st.error(f"Test failed: {e}")
-
-"""
-requirements.txt (make sure this is in your repo root):
-
-streamlit
-python-pptx
-"""
-
