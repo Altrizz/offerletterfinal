@@ -403,7 +403,7 @@ if st.session_state[HISTORY_KEY]:
             if item["thumb_mime"] == "image/svg+xml":
                 embed_svg(item["thumb_bytes"], width=220)
             elif item["thumb_mime"] in ("image/png", "image/jpeg"):
-                st.image(item["thumb_bytes"], use_column_width=True)
+                st.image(thumbnail_path, use_container_width=True)
             else:
                 embed_svg(svg_placeholder("Offer Letter", f"{meta['first_name']} {meta['last_name']}"), width=220)
 
