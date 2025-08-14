@@ -1,15 +1,28 @@
-# app.py — Streamlit (Cloud) with robust PPTX replacement
-# Branding: White background, readable titles, Hogarth footer logo, no email features
+# app.py — modern UI + robust PPTX replacement (Streamlit Cloud ready)
+# - White / soft gradient background, glass card, refined inputs & buttons
+# - Replaces placeholders across split runs, tables, grouped shapes
+# - Supports {{CURLY}} tokens and legacy X-style tokens
+# - Output filename: "Offer Letter - <Candidate Name>.pptx"
+# - Optional footer logo: add "hogarth_split_black.png" to repo root
 
 import re
+import os
 from datetime import date
 from io import BytesIO
-import base64
-from pathlib import Path
 
 import streamlit as st
 from pptx import Presentation
 from pptx.shapes.group import GroupShape
+
+# ==============================
+# THEME COLORS (tweak freely)
+# ==============================
+PRIMARY = "#FF527E"   # Wild Watermelon
+ACCENT  = "#27C79A"   # Shamrock
+BG1     = "#ffffff"   # background top
+BG2     = "#f6f7fb"   # background bottom
+TEXT    = "#0b1220"   # main text color
+RADIUS  = 14          # corner radius
 
 # ==============================
 # Helpers: dates, formatting, tokens
@@ -70,7 +83,6 @@ def replace_placeholders_in_text(text: str, mapping: dict) -> str:
 # ==============================
 # PPTX replacement across runs / tables / grouped shapes
 # ==============================
-
 def _replace_in_text_frame(tf, mapping: dict):
     for para in tf.paragraphs:
         if not para.runs:
@@ -112,72 +124,103 @@ def render_pptx(pptx_bytes: bytes, mapping: dict) -> BytesIO:
     return out
 
 # ==============================
-# THEME — White bg + readable titles + Hogarth footer logo
+# PAGE SETUP + STYLES
 # ==============================
-HOGARTH = {
-    "primary": "#FF527E",  # Wild Watermelon
-    "accent":  "#27C79A",  # Shamrock
-}
-
 st.set_page_config(page_title="Offer Letter Generator", page_icon="📄", layout="centered")
 
-# Inject minimal, readable theme on white
-st.markdown(
-    f"""
-    <style>
-      .stApp {{ background:#ffffff; }}
-      h1, h2, h3, label, .stTextInput label, .stDateInput label {{ color:#111 !important; }}
-      div.stButton > button {{
-        background: {HOGARTH['primary']};
-        color: #0b1220; border: 0; padding: .7rem 1.1rem; border-radius: 14px;
-        box-shadow: 0 6px 14px rgba(0,0,0,.08);
-        transition: transform .02s, box-shadow .2s;
-      }}
-      div.stButton > button:hover {{ transform: translateY(-1px); box-shadow:0 10px 20px rgba(0,0,0,.12); }}
-      .stDownloadButton > button {{
-        background: {HOGARTH['accent']}; color:#0b1220; border:0; padding:.7rem 1.1rem; border-radius:14px;
-        box-shadow: 0 6px 14px rgba(0,0,0,.08);
-      }}
-      .stTextInput > div > div > input,
-      .stDateInput > div > div input {{ border-radius: 14px !important; }}
-      /* Footer logo container */
-      .hogarth-footer {{
-        position: fixed; left: 50%; transform: translateX(-50%);
-        bottom: 12px; opacity:.9; z-index: 0; pointer-events:none;
-      }}
-      .block-container {{ position: relative; z-index: 1; }}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-# Helper: embed a local PNG as a fixed footer logo (centered bottom)
-def render_footer_logo(filename: str = "hogarth_split_black.png"):
-    path = Path(__file__).with_name(filename)
-    # Fallback names
-    if not path.exists():
-        alt = Path(__file__).with_name("hogarth_split.png")
-        if alt.exists():
-            path = alt
-    if path.exists():
-        b64 = base64.b64encode(path.read_bytes()).decode("utf-8")
-        st.markdown(
-            f"<div class='hogarth-footer'><img alt='Hogarth' src='data:image/png;base64,{b64}' style='width:clamp(220px,28vw,520px);' /></div>",
-            unsafe_allow_html=True,
-        )
+st.markdown(f"""
+<style>
+:root {{
+  --primary: {PRIMARY};
+  --accent:  {ACCENT};
+  --text:    {TEXT};
+  --radius:  {RADIUS}px;
+}}
+/* Background */
+.stApp {{
+  background: linear-gradient(180deg, {BG1} 0%, {BG2} 100%);
+  color: var(--text);
+}}
+/* Center column width & spacing */
+.block-container {{
+  max-width: 980px;
+  padding-top: 2.5rem;
+  padding-bottom: 4rem;
+}}
+/* Glass card container */
+.card {{
+  background: rgba(255,255,255,0.85);
+  backdrop-filter: blur(6px);
+  border: 1px solid rgba(12,12,32,0.06);
+  border-radius: var(--radius);
+  padding: 1.4rem 1.6rem;
+  box-shadow: 0 10px 30px rgba(12,12,32,.06);
+}}
+/* Headings */
+h1, h2, h3 {{ color: var(--text); letter-spacing: .2px; }}
+h1.title-gradient {{
+  background: linear-gradient(90deg, var(--text) 0%, #3b3b55 40%, #7a7a90 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  font-weight: 800;
+}}
+/* Inputs */
+.stTextInput > div > div > input,
+.stDateInput > div > div input {{
+  border-radius: var(--radius) !important;
+  border: 1px solid rgba(12,12,32,0.12);
+  background: #fff;
+}}
+/* Data editor */
+[data-testid="stDataEditor"] .st-dx, [data-testid="stDataEditor"] .st-dk {{
+  border-radius: var(--radius);
+}}
+/* Buttons */
+div.stButton > button {{
+  border: 0;
+  border-radius: var(--radius);
+  padding: .75rem 1.15rem;
+  font-weight: 600;
+  box-shadow: 0 10px 28px rgba(12,12,32,.10);
+  transition: transform .02s ease, box-shadow .2s ease, filter .2s ease;
+}}
+div.stButton > button[kind="primary"] {{
+  background: var(--primary);
+  color: #0b1220;
+}}
+div.stButton > button:hover {{ transform: translateY(-1px); filter: brightness(1.02); }}
+/* Download button */
+.stDownloadButton > button {{
+  background: var(--accent);
+  color: #0b1220;
+  border: 0;
+  border-radius: var(--radius);
+  padding: .75rem 1.15rem;
+  font-weight: 600;
+  box-shadow: 0 10px 28px rgba(12,12,32,.10);
+}}
+/* Footer logo area */
+.footer-logo {{
+  display: flex; align-items: center; justify-content: center;
+  margin-top: 48px; opacity: .9;
+}}
+.footer-logo img {{
+  max-width: 520px; width: 50%; height: auto;
+  filter: contrast(110%);
+}}
+</style>
+""", unsafe_allow_html=True)
 
 # ==============================
-# APP CONTENT (no email)
+# APP CONTENT (wrapped in a "card")
 # ==============================
-st.title("📄 Offer Letter Generator")
+st.markdown("<h1 class='title-gradient'>Offer Letter Generator</h1>", unsafe_allow_html=True)
+st.markdown("<div class='card'>", unsafe_allow_html=True)
 
 uploaded_file = st.file_uploader(
     "Upload PPTX Template",
     type=["pptx"],
-    help=(
-        "Use placeholders like {{CANDIDATE_NAME}}, {{POSITION}}, {{SALARY}}, {{JOIN_DATE}}, {{DATE}}, {{CITY}} "
-        "or the legacy X tokens used in your template."
-    ),
+    help="Use placeholders like {{CANDIDATE_NAME}}, {{POSITION}}, {{SALARY}}, {{JOIN_DATE}}, {{DATE}}, {{CITY}} "
+         "or the legacy X tokens used in your template."
 )
 
 col1, col2 = st.columns(2)
@@ -198,6 +241,8 @@ with c1:
     generate_clicked = st.button("⚙️ Generate Offer Letter", type="primary", disabled=(uploaded_file is None))
 with c2:
     clear_clicked = st.button("🧹 Clear fields")
+
+st.markdown("</div>", unsafe_allow_html=True)  # close .card
 
 if clear_clicked:
     st.experimental_rerun()
@@ -234,5 +279,12 @@ if generate_clicked:
         except Exception as e:
             st.exception(e)
 
-# Render footer logo (expects hogarth_split_black.png in repo root)
-render_footer_logo()
+# ==============================
+# Optional Hogarth footer logo
+# ==============================
+logo_candidates = ["hogarth_split_black.png", "hogarth_split.png"]
+logo_path = next((p for p in logo_candidates if os.path.exists(p)), None)
+if logo_path:
+    st.markdown("<div class='footer-logo'>", unsafe_allow_html=True)
+    st.image(logo_path)
+    st.markdown("</div>", unsafe_allow_html=True)
