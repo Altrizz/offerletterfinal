@@ -1,26 +1,28 @@
 # app.py — Streamlit Cloud ready
-# Default Streamlit theme, cleaner inputs, robust PPTX replacement
-# + Session History: replay, download, delete, export-zip
+# Default theme • Template selector (with previews) • Custom upload
+# Robust PPTX replacement (split runs, tables, groups)
+# Session History with thumbnails • Export ZIP • Restore
 
 import re
-import os
 import io
+import os
 import base64
+import zipfile
 from pathlib import Path
 from datetime import date, datetime
 from io import BytesIO
-from zipfile import ZipFile, ZIP_DEFLATED
+from typing import List, Optional, Tuple
 
 import streamlit as st
 from pptx import Presentation
 from pptx.shapes.group import GroupShape
 
-# ------------------------------
-# Helpers: dates, salary format
-# ------------------------------
+# ==============================
+# Formatting helpers
+# ==============================
 MESES_ES = [
-    "enero", "febrero", "marzo", "abril", "mayo", "junio",
-    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+    "enero","febrero","marzo","abril","mayo","junio",
+    "julio","agosto","septiembre","octubre","noviembre","diciembre",
 ]
 def fecha_es(d: date) -> str:
     return f"{d.day} de {MESES_ES[d.month-1]} de {d.year}"
@@ -31,12 +33,12 @@ def format_ars_dots(value) -> str:
         return str(value)
     return f"{int(digits):,}".replace(",", ".")
 
-# Curly placeholders like {{CANDIDATE_NAME}}
+# ==============================
+# Placeholder patterns
+# ==============================
 PLACEHOLDER = re.compile(r"{{\s*([A-Z0-9_]+)\s*}}")
-
-# Legacy X-style tokens from the provided template
 PAT_NAME = re.compile(r"\{X{6}\}")            # {XXXXXX}
-PAT_POS  = re.compile(r"(?<!\{)X{8}(?!\})")   # XXXXXXXX not inside {}
+PAT_POS  = re.compile(r"(?<!\{)X{8}(?!\})")   # XXXXXXXX (not inside {})
 PAT_DATE = re.compile(r"\bX{2}\s+de\s+X{4,5}\s+de\s+\d{4}\b")
 PAT_SAL  = re.compile(r"\bX\.XXX\.XXX\b")
 
@@ -49,16 +51,11 @@ def apply_x_style(text: str, mapping: dict) -> str:
     offer_date_es = mapping.get("DATE")
 
     out = text
-    if name:
-        out = PAT_NAME.sub(name, out)
-    if position:
-        out = PAT_POS.sub(position, out)
-    if join_date_es:
-        out = PAT_DATE.sub(join_date_es, out)
-    if salary:
-        out = PAT_SAL.sub(format_ars_dots(salary), out)
+    if name:     out = PAT_NAME.sub(name, out)
+    if position: out = PAT_POS.sub(position, out)
+    if join_date_es: out = PAT_DATE.sub(join_date_es, out)
+    if salary:   out = PAT_SAL.sub(format_ars_dots(salary), out)
 
-    # lines like ", Buenos Aires" -> "<DATE>, <CITY>"
     striped = out.strip()
     if striped == ", Buenos Aires" or striped.endswith(", Buenos Aires"):
         out = f"{offer_date_es}, {city}" if offer_date_es else city
@@ -70,9 +67,9 @@ def replace_placeholders_in_text(text: str, mapping: dict) -> str:
         return str(mapping.get(key, m.group(0)))
     return apply_x_style(PLACEHOLDER.sub(repl, text), mapping)
 
-# ------------------------------
-# PPTX replacement across runs / tables / groups
-# ------------------------------
+# ==============================
+# PPTX text replacement (runs/tables/groups safe)
+# ==============================
 def _replace_in_text_frame(tf, mapping: dict):
     for para in tf.paragraphs:
         if not para.runs:
@@ -113,36 +110,107 @@ def render_pptx(pptx_bytes: bytes, mapping: dict) -> BytesIO:
     out.seek(0)
     return out
 
-# ------------------------------
-# Optional footer logo
-# ------------------------------
-def footer_logo():
-    for name in ("hogarth_split_black.png", "hogarth_split.png"):
-        p = Path(__file__).with_name(name)
-        if p.exists():
-            b64 = base64.b64encode(p.read_bytes()).decode("utf-8")
-            st.markdown(
-                f"<div style='display:flex;justify-content:center;margin-top:36px'>"
-                f"<img src='data:image/png;base64,{b64}' style='max-width:520px;width:60%;height:auto' />"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-            break
+# ==============================
+# Template loader & thumbnail utils
+# ==============================
+def list_templates() -> List[Path]:
+    tpl_dir = Path(__file__).with_name("templates")
+    if not tpl_dir.exists():
+        return []
+    return sorted([p for p in tpl_dir.glob("*.pptx") if p.is_file()])
 
-# ------------------------------
-# Session History utils
-# ------------------------------
+def load_template_bytes(label: str) -> Optional[bytes]:
+    for p in list_templates():
+        if p.stem.replace("_", " ") == label:
+            return p.read_bytes()
+    return None
+
+def pptx_doc_thumbnail(pptx_bytes: bytes) -> Optional[Tuple[str, bytes]]:
+    """
+    Try to extract the document preview thumbnail from /docProps/thumbnail.jpeg|png|wmf
+    Returns (mime, data) or None.
+    """
+    try:
+        with zipfile.ZipFile(BytesIO(pptx_bytes)) as zf:
+            for name in ("docProps/thumbnail.jpeg", "docProps/thumbnail.jpg",
+                         "docProps/thumbnail.png"):
+                if name in zf.namelist():
+                    data = zf.read(name)
+                    mime = "image/jpeg" if name.endswith(("jpeg","jpg")) else "image/png"
+                    return mime, data
+    except Exception:
+        pass
+    return None
+
+def svg_placeholder(title: str, subtitle: str = "", w: int = 480, h: int = 270) -> bytes:
+    """
+    Create a simple SVG placeholder card and return PNG bytes via SVG data URL rendered by browser.
+    Streamlit can show SVG via markdown; for st.image we prefer PNG/JPG bytes.
+    Here we return SVG bytes and embed via <img> to keep deps minimal.
+    """
+    title = (title or "").replace("&", "&amp;")
+    subtitle = (subtitle or "").replace("&", "&amp;")
+    svg = f"""
+    <svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}">
+      <defs>
+        <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#F2F4F8"/>
+          <stop offset="100%" stop-color="#E9ECF3"/>
+        </linearGradient>
+      </defs>
+      <rect width="100%" height="100%" rx="16" fill="url(#g)" stroke="#D9DFEA"/>
+      <text x="24" y="120" font-family="Inter,system-ui,Segoe UI,Arial" font-weight="700"
+            font-size="28" fill="#0b1220">{title}</text>
+      <text x="24" y="160" font-family="Inter,system-ui,Segoe UI,Arial"
+            font-size="16" fill="#475569">{subtitle}</text>
+      <rect x="24" y="190" width="{w-48}" height="8" rx="4" fill="#E2E8F0"/>
+      <rect x="24" y="210" width="{int((w-48)*0.65)}" height="8" rx="4" fill="#EEF2F7"/>
+    </svg>
+    """.strip()
+    return svg.encode("utf-8")
+
+def embed_svg(svg_bytes: bytes, width: int = 240):
+    b64 = base64.b64encode(svg_bytes).decode("utf-8")
+    st.markdown(
+        f"<img src='data:image/svg+xml;base64,{b64}' width='{width}' />",
+        unsafe_allow_html=True,
+    )
+
+def first_texts_from_pptx(pptx_bytes: bytes, max_len: int = 40) -> Tuple[str, str]:
+    """Best-effort: pull first two meaningful text lines from first slide."""
+    try:
+        prs = Presentation(BytesIO(pptx_bytes))
+        if not prs.slides:
+            return "", ""
+        texts = []
+        for shp in prs.slides[0].shapes:
+            if getattr(shp, "has_text_frame", False):
+                for p in shp.text_frame.paragraphs:
+                    s = "".join(r.text for r in p.runs) if p.runs else (p.text or "")
+                    s = " ".join(s.split())
+                    if s:
+                        texts.append(s)
+            if len(texts) >= 2:
+                break
+        t1 = texts[0][:max_len] if texts else "Offer Template"
+        t2 = texts[1][:max_len] if len(texts) > 1 else ""
+        return t1, t2
+    except Exception:
+        return "Offer Template", ""
+
+# ==============================
+# Session History
+# ==============================
 HISTORY_KEY = "offer_history"
 MAX_HISTORY = 50
 
 def ensure_history():
     if HISTORY_KEY not in st.session_state:
-        st.session_state[HISTORY_KEY] = []  # list of dicts
+        st.session_state[HISTORY_KEY] = []
 
 def push_history(entry: dict):
     ensure_history()
     st.session_state[HISTORY_KEY].append(entry)
-    # cap size
     if len(st.session_state[HISTORY_KEY]) > MAX_HISTORY:
         st.session_state[HISTORY_KEY] = st.session_state[HISTORY_KEY][-MAX_HISTORY:]
 
@@ -154,27 +222,57 @@ def delete_history(idx: int):
 def zip_all_history() -> bytes:
     ensure_history()
     mem = io.BytesIO()
-    with ZipFile(mem, "w", ZIP_DEFLATED) as zf:
-        for i, item in enumerate(st.session_state[HISTORY_KEY], start=1):
-            fname = item["file_name"]
-            zf.writestr(fname, item["pptx_bytes"])
+    with zipfile.ZipFile(mem, "w", zipfile.ZIP_DEFLATED) as zf:
+        for item in st.session_state[HISTORY_KEY]:
+            zf.writestr(item["file_name"], item["pptx_bytes"])
     mem.seek(0)
     return mem.getvalue()
 
-# ------------------------------
+# ==============================
 # UI
-# ------------------------------
+# ==============================
 st.set_page_config(page_title="Offer Letter Generator", page_icon="📄", layout="centered")
 st.title("Offer Letter Generator")
 
-uploaded_file = st.file_uploader(
-    "Upload PPTX Template",
-    type=["pptx"],
-    help="Use placeholders like {{CANDIDATE_NAME}}, {{FIRST_NAME}}, {{LAST_NAME}}, {{POSITION}}, "
-         "{{SALARY}}, {{JOIN_DATE}}, {{DATE}}, {{CITY}} or the legacy X tokens used in your template."
-)
+# --- Template picker with previews ---
+templates = list_templates()
+tpl_labels = [p.stem.replace("_", " ") for p in templates]
+choices = ["— Select built-in template —"] + tpl_labels + ["Upload custom…"]
+pick = st.selectbox("Offer letter template", options=choices, index=0)
 
-# Inputs
+uploaded_file = None
+builtin_template_bytes: Optional[bytes] = None
+
+if pick == "Upload custom…":
+    uploaded_file = st.file_uploader(
+        "Upload a PPTX template",
+        type=["pptx"],
+        help="Custom .pptx with placeholders like {{CANDIDATE_NAME}}, {{POSITION}}, etc."
+    )
+elif pick != "— Select built-in template —":
+    builtin_template_bytes = load_template_bytes(pick)
+    if builtin_template_bytes is None:
+        st.error("Template not found or unreadable. Check the templates/ folder.")
+    else:
+        st.success(f"Using built-in template: **{pick}**")
+
+# Preview gallery (built-in templates)
+if templates:
+    st.caption("Template previews")
+    cols = st.columns(3)
+    for i, p in enumerate(templates):
+        with cols[i % 3]:
+            pptx_bytes = p.read_bytes()
+            thumb = pptx_doc_thumbnail(pptx_bytes)
+            if thumb:
+                mime, data = thumb
+                st.image(data, caption=p.stem.replace("_", " "), use_column_width=True)
+            else:
+                t1, t2 = first_texts_from_pptx(pptx_bytes)
+                embed_svg(svg_placeholder(t1, t2), width=300)
+                st.caption(p.stem.replace("_", " "))
+
+# --- Inputs ---
 colA, colB = st.columns(2)
 with colA:
     first_name = st.text_input("First name", placeholder="Jane")
@@ -189,114 +287,137 @@ common_cities = ["Buenos Aires", "Córdoba", "Rosario", "Mendoza", "Other..."]
 city_pick = st.selectbox("City", options=common_cities, index=0)
 city = st.text_input("City (custom)", value="", placeholder="Type city") if city_pick == "Other..." else city_pick
 
-# Extras mapping
 st.subheader("Extra placeholders (optional)")
 extras = st.data_editor([{"key": "", "value": ""}], num_rows="dynamic", hide_index=True)
 
-# Actions
+# --- Actions ---
 col1, col2 = st.columns(2)
 with col1:
-    generate_clicked = st.button("Generate Offer Letter", type="primary", disabled=(uploaded_file is None))
+    generate_clicked = st.button("Generate Offer Letter", type="primary",
+                                 disabled=(not builtin_template_bytes and not uploaded_file))
 with col2:
     if st.button("Clear fields"):
         st.experimental_rerun()
 
-# Generate
+# --- Generate ---
 if generate_clicked:
-    if not uploaded_file:
-        st.warning("Please upload a PPTX template first.")
+    # Source PPTX bytes
+    if builtin_template_bytes:
+        source_bytes = builtin_template_bytes
+        template_label = pick
+    elif uploaded_file:
+        source_bytes = uploaded_file.read()
+        template_label = uploaded_file.name
     else:
-        full_name = f"{first_name} {last_name}".strip()
-        mapping = {
-            "CANDIDATE_NAME": full_name,
-            "FIRST_NAME": first_name,
-            "LAST_NAME": last_name,
-            "POSITION": position,
-            "SALARY": format_ars_dots(salary_num),
-            "JOIN_DATE": fecha_es(join_date),
-            "DATE": fecha_es(offer_date),
-            "CITY": city,
-        }
-        extra_pairs = []
-        for row in extras:
-            k = (row.get("key") or "").strip()
-            v = (row.get("value") or "").strip()
-            if k:
-                mapping[k.upper()] = v
-                extra_pairs.append((k.upper(), v))
+        st.warning("Please select a built-in template or upload a PPTX.")
+        st.stop()
 
-        try:
-            pptx_bytes = uploaded_file.read()
-            edited = render_pptx(pptx_bytes, mapping)
-            safe_name = " ".join(full_name.split()) or "Offer Letter"
-            file_name_out = f"Offer Letter - {safe_name}.pptx"
+    full_name = f"{first_name} {last_name}".strip()
+    mapping = {
+        "CANDIDATE_NAME": full_name,
+        "FIRST_NAME": first_name,
+        "LAST_NAME": last_name,
+        "POSITION": position,
+        "SALARY": format_ars_dots(salary_num),
+        "JOIN_DATE": fecha_es(join_date),
+        "DATE": fecha_es(offer_date),
+        "CITY": city,
+    }
+    extra_pairs = []
+    for row in extras:
+        k = (row.get("key") or "").strip()
+        v = (row.get("value") or "").strip()
+        if k:
+            mapping[k.upper()] = v
+            extra_pairs.append((k.upper(), v))
 
-            # Offer for immediate download
-            st.download_button(
-                "Download Updated PPTX",
-                data=edited.getvalue(),
-                file_name=file_name_out,
-                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            )
-            st.success(f"Done! Generated {file_name_out}.")
+    try:
+        edited = render_pptx(source_bytes, mapping)
+        safe_name = " ".join(full_name.split()) or "Offer Letter"
+        file_name_out = f"Offer Letter - {safe_name}.pptx"
 
-            # Save to session history
-            push_history({
-                "ts": datetime.now(),
-                "file_name": file_name_out,
-                "pptx_bytes": edited.getvalue(),
-                "fields": {
-                    "first_name": first_name, "last_name": last_name, "position": position,
-                    "salary_num": int(salary_num), "offer_date": offer_date.isoformat(),
-                    "join_date": join_date.isoformat(), "city": city,
-                },
-                "extras": extra_pairs,
-            })
-        except Exception as e:
-            st.exception(e)
+        st.download_button(
+            "Download Updated PPTX",
+            data=edited.getvalue(),
+            file_name=file_name_out,
+            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+        st.success(f"Done! Generated {file_name_out}.")
+
+        # Build a thumbnail for history
+        # Try docProps thumbnail of the source (templates often have one)
+        t_mime, t_bytes = (None, None)
+        doc_thumb = pptx_doc_thumbnail(source_bytes)
+        if doc_thumb:
+            t_mime, t_bytes = doc_thumb
+        else:
+            # Fallback placeholder using name + role
+            svg = svg_placeholder(full_name or "Offer", position or "")
+            # Store SVG data URI so we can render later in history
+            t_mime, t_bytes = "image/svg+xml", svg
+
+        # Save in history
+        push_history({
+            "ts": datetime.now(),
+            "file_name": file_name_out,
+            "pptx_bytes": edited.getvalue(),
+            "thumb_mime": t_mime,
+            "thumb_bytes": t_bytes,
+            "template": template_label,
+            "fields": {
+                "first_name": first_name, "last_name": last_name, "position": position,
+                "salary_num": int(salary_num), "offer_date": offer_date.isoformat(),
+                "join_date": join_date.isoformat(), "city": city,
+            },
+            "extras": extra_pairs,
+        })
+    except Exception as e:
+        st.exception(e)
 
 st.divider()
 
-# ------------------------------
-# History panel
-# ------------------------------
+# ==============================
+# History with thumbnails
+# ==============================
 ensure_history()
 st.subheader(f"History (this session) — {len(st.session_state[HISTORY_KEY])} item(s)")
 
 if st.session_state[HISTORY_KEY]:
     # Export all as ZIP
-    zip_bytes = zip_all_history()
     st.download_button(
         "Export all offers (ZIP)",
-        data=zip_bytes,
+        data=zip_all_history(),
         file_name="offer_letters_history.zip",
         mime="application/zip",
         type="secondary",
     )
 
-    # Show newest first
+    # Cards newest-first
     for idx, item in reversed(list(enumerate(st.session_state[HISTORY_KEY]))):
         meta = item["fields"]
         ts = item["ts"].strftime("%Y-%m-%d %H:%M")
-        label = f"🗂️ {item['file_name']} · {meta['position']} · {meta['city']} · {ts}"
-        with st.expander(label, expanded=False):
-            cA, cB, cC = st.columns([1,1,1])
-            with cA:
-                st.write(f"**Candidate:** {meta['first_name']} {meta['last_name']}")
-                st.write(f"**Position:** {meta['position']}")
-                st.write(f"**City:** {meta['city']}")
-            with cB:
-                st.write(f"**Offer date:** {fecha_es(date.fromisoformat(meta['offer_date']))}")
-                st.write(f"**Join date:** {fecha_es(date.fromisoformat(meta['join_date']))}")
-                st.write(f"**Salary (ARS):** {format_ars_dots(meta['salary_num'])}")
-            with cC:
-                if item["extras"]:
-                    st.write("**Extras:**")
-                    for k, v in item["extras"]:
-                        st.write(f"- {k}: {v}")
 
-            d1, d2, d3 = st.columns([1,1,1])
-            with d1:
+        # Thumbnail row
+        cthumb, cmeta = st.columns([1, 3])
+        with cthumb:
+            if item["thumb_mime"] == "image/svg+xml":
+                embed_svg(item["thumb_bytes"], width=220)
+            elif item["thumb_mime"] in ("image/png", "image/jpeg"):
+                st.image(item["thumb_bytes"], use_column_width=True)
+            else:
+                embed_svg(svg_placeholder("Offer Letter", f"{meta['first_name']} {meta['last_name']}"), width=220)
+
+        with cmeta:
+            st.markdown(f"**{item['file_name']}**  \n"
+                        f"**{meta['first_name']} {meta['last_name']}** — {meta['position']}  \n"
+                        f"{meta['city']} · Offer: {fecha_es(date.fromisoformat(meta['offer_date']))} · "
+                        f"Join: {fecha_es(date.fromisoformat(meta['join_date']))}  \n"
+                        f"Salary: {format_ars_dots(meta['salary_num'])}  \n"
+                        f"Template: {item.get('template','N/A')}  \n"
+                        f"*Created:* {ts}")
+
+            bcol1, bcol2, bcol3 = st.columns([1,1,1])
+            with bcol1:
                 st.download_button(
                     "Download again",
                     data=item["pptx_bytes"],
@@ -304,9 +425,8 @@ if st.session_state[HISTORY_KEY]:
                     mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                     key=f"dl_{idx}",
                 )
-            with d2:
+            with bcol2:
                 if st.button("Restore to form", key=f"restore_{idx}"):
-                    # Repopulate inputs and rerun
                     st.session_state["First name"] = meta["first_name"]
                     st.session_state["Last name"]  = meta["last_name"]
                     st.session_state["Position"]   = meta["position"]
@@ -314,19 +434,32 @@ if st.session_state[HISTORY_KEY]:
                     st.session_state["Offer date"] = date.fromisoformat(meta["offer_date"])
                     st.session_state["Join date"]  = date.fromisoformat(meta["join_date"])
                     st.session_state["City"]       = meta["city"]
-                    # Recreate extras grid rows
                     st.session_state["_extras_prefill"] = [{"key": k, "value": v} for k, v in item["extras"]]
                     st.experimental_rerun()
-            with d3:
+            with bcol3:
                 if st.button("Delete", key=f"del_{idx}"):
                     delete_history(idx)
                     st.experimental_rerun()
 else:
-    st.info("No offers generated yet. When you create one, it will appear here for quick download and restore.")
+    st.info("No offers generated yet. When you create one, it will appear here with a thumbnail.")
 
-# Prefill extras after restore, if present
+# Consume extras prefill on restore (cannot live-update the editor mid-run)
 if "_extras_prefill" in st.session_state:
-    st.session_state.pop("_extras_prefill")  # consumed; editor cannot be updated post-render
+    st.session_state.pop("_extras_prefill")
 
-# Footer logo (optional)
+# ==============================
+# Optional footer logo (add hogarth_split_black.png next to app.py)
+# ==============================
+def footer_logo():
+    for name in ("hogarth_split_black.png", "hogarth_split.png"):
+        p = Path(__file__).with_name(name)
+        if p.exists():
+            b64 = base64.b64encode(p.read_bytes()).decode("utf-8")
+            st.markdown(
+                f"<div style='display:flex;justify-content:center;margin-top:36px'>"
+                f"<img src='data:image/png;base64,{b64}' style='max-width:520px;width:60%;height:auto' />"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+            break
 footer_logo()
