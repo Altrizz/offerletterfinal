@@ -1,10 +1,11 @@
 # app.py — Streamlit (Cloud) with robust PPTX replacement
-# Branding: White background + subtle Hogarth split band across the middle
-# Email features removed
+# Branding: White background, readable titles, Hogarth footer logo, no email features
 
 import re
 from datetime import date
 from io import BytesIO
+import base64
+from pathlib import Path
 
 import streamlit as st
 from pptx import Presentation
@@ -14,8 +15,8 @@ from pptx.shapes.group import GroupShape
 # Helpers: dates, formatting, tokens
 # ==============================
 MESES_ES = [
-    "enero","febrero","marzo","abril","mayo","junio",
-    "julio","agosto","septiembre","octubre","noviembre","diciembre",
+    "enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
 ]
 
 def fecha_es(d: date) -> str:
@@ -69,6 +70,7 @@ def replace_placeholders_in_text(text: str, mapping: dict) -> str:
 # ==============================
 # PPTX replacement across runs / tables / grouped shapes
 # ==============================
+
 def _replace_in_text_frame(tf, mapping: dict):
     for para in tf.paragraphs:
         if not para.runs:
@@ -110,62 +112,59 @@ def render_pptx(pptx_bytes: bytes, mapping: dict) -> BytesIO:
     return out
 
 # ==============================
-# THEME — White bg + Hogarth split band
+# THEME — White bg + readable titles + Hogarth footer logo
 # ==============================
 HOGARTH = {
     "primary": "#FF527E",  # Wild Watermelon
     "accent":  "#27C79A",  # Shamrock
-    "indigo":  "#4F51C9",  # Indigo
-    "star":    "#DEF034",  # Starship
-    "mirage":  "#191528",  # Mirage
 }
 
 st.set_page_config(page_title="Offer Letter Generator", page_icon="📄", layout="centered")
 
+# Inject minimal, readable theme on white
 st.markdown(
     f"""
     <style>
       .stApp {{ background:#ffffff; }}
-      /* Subtle mid-page 'Hogarth split' band */
-      .stApp::before {{
-        content:"";
-        position: fixed; left:0; right:0; top:50%;
-        transform: translateY(-50%);
-        height: 240px;      /* thickness of the band */
-        background:
-          radial-gradient(800px 240px at 85% 0%, {HOGARTH['star']}22, transparent 60%),
-          linear-gradient(135deg, {HOGARTH['indigo']} 0%, {HOGARTH['mirage']} 100%);
-        opacity: .12;       /* keep it subtle */
-        pointer-events: none;
-        z-index: 0;
-      }}
-      .block-container {{ position: relative; z-index: 1; }}
-
-      /* Buttons */
+      h1, h2, h3, label, .stTextInput label, .stDateInput label {{ color:#111 !important; }}
       div.stButton > button {{
         background: {HOGARTH['primary']};
-        color: #0b1220;
-        border: 0; padding: .7rem 1.1rem; border-radius: 14px;
+        color: #0b1220; border: 0; padding: .7rem 1.1rem; border-radius: 14px;
         box-shadow: 0 6px 14px rgba(0,0,0,.08);
         transition: transform .02s, box-shadow .2s;
       }}
-      div.stButton > button:hover {{
-        transform: translateY(-1px);
-        box-shadow: 0 10px 20px rgba(0,0,0,.12);
-      }}
+      div.stButton > button:hover {{ transform: translateY(-1px); box-shadow:0 10px 20px rgba(0,0,0,.12); }}
       .stDownloadButton > button {{
-        background: {HOGARTH['accent']};
-        color: #0b1220; border:0; padding:.7rem 1.1rem; border-radius:14px;
+        background: {HOGARTH['accent']}; color:#0b1220; border:0; padding:.7rem 1.1rem; border-radius:14px;
         box-shadow: 0 6px 14px rgba(0,0,0,.08);
       }}
-
-      /* Inputs rounding */
       .stTextInput > div > div > input,
       .stDateInput > div > div input {{ border-radius: 14px !important; }}
+      /* Footer logo container */
+      .hogarth-footer {{
+        position: fixed; left: 50%; transform: translateX(-50%);
+        bottom: 12px; opacity:.9; z-index: 0; pointer-events:none;
+      }}
+      .block-container {{ position: relative; z-index: 1; }}
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+# Helper: embed a local PNG as a fixed footer logo (centered bottom)
+def render_footer_logo(filename: str = "hogarth_split_black.png"):
+    path = Path(__file__).with_name(filename)
+    # Fallback names
+    if not path.exists():
+        alt = Path(__file__).with_name("hogarth_split.png")
+        if alt.exists():
+            path = alt
+    if path.exists():
+        b64 = base64.b64encode(path.read_bytes()).decode("utf-8")
+        st.markdown(
+            f"<div class='hogarth-footer'><img alt='Hogarth' src='data:image/png;base64,{b64}' style='width:clamp(220px,28vw,520px);' /></div>",
+            unsafe_allow_html=True,
+        )
 
 # ==============================
 # APP CONTENT (no email)
@@ -175,8 +174,10 @@ st.title("📄 Offer Letter Generator")
 uploaded_file = st.file_uploader(
     "Upload PPTX Template",
     type=["pptx"],
-    help="Use placeholders like {{CANDIDATE_NAME}}, {{POSITION}}, {{SALARY}}, {{JOIN_DATE}}, {{DATE}}, {{CITY}} "
-         "or the legacy X tokens used in your template."
+    help=(
+        "Use placeholders like {{CANDIDATE_NAME}}, {{POSITION}}, {{SALARY}}, {{JOIN_DATE}}, {{DATE}}, {{CITY}} "
+        "or the legacy X tokens used in your template."
+    ),
 )
 
 col1, col2 = st.columns(2)
@@ -232,3 +233,6 @@ if generate_clicked:
             st.success(f"Done! Generated {file_name_out} with all placeholders replaced.")
         except Exception as e:
             st.exception(e)
+
+# Render footer logo (expects hogarth_split_black.png in repo root)
+render_footer_logo()
