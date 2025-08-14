@@ -1,16 +1,15 @@
-# app.py - Streamlit Cloud ready
-# Default Streamlit background, cleaned inputs, robust PPTX placeholder replacement
-# - Supports {{CURLY}} tokens and legacy X-style tokens
-# - Replaces even when tokens are split across runs, tables, grouped shapes
-# - File name: "Offer Letter - <First> <Last>.pptx"
-# - Optional footer logo: add "hogarth_split_black.png" (or hogarth_split.png) to repo root
+# app.py — Streamlit Cloud ready
+# Default Streamlit theme, cleaner inputs, robust PPTX replacement
+# + Session History: replay, download, delete, export-zip
 
 import re
 import os
+import io
 import base64
 from pathlib import Path
-from datetime import date
+from datetime import date, datetime
 from io import BytesIO
+from zipfile import ZipFile, ZIP_DEFLATED
 
 import streamlit as st
 from pptx import Presentation
@@ -23,12 +22,10 @@ MESES_ES = [
     "enero", "febrero", "marzo", "abril", "mayo", "junio",
     "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
 ]
-
 def fecha_es(d: date) -> str:
     return f"{d.day} de {MESES_ES[d.month-1]} de {d.year}"
 
 def format_ars_dots(value) -> str:
-    # accepts int/str, returns ARS with dot thousands
     digits = "".join(ch for ch in str(value) if ch.isdigit())
     if not digits:
         return str(value)
@@ -68,7 +65,6 @@ def apply_x_style(text: str, mapping: dict) -> str:
     return out
 
 def replace_placeholders_in_text(text: str, mapping: dict) -> str:
-    # First resolve {{KEY}} placeholders, then legacy X tokens
     def repl(m):
         key = m.group(1).upper()
         return str(mapping.get(key, m.group(0)))
@@ -134,53 +130,39 @@ def footer_logo():
             break
 
 # ------------------------------
-# Token detector (debug helper)
+# Session History utils
 # ------------------------------
-def detect_tokens(pptx_bytes: bytes):
-    prs = Presentation(BytesIO(pptx_bytes))
-    found_curly = set()
-    x_name = x_pos = x_date = x_sal = False
+HISTORY_KEY = "offer_history"
+MAX_HISTORY = 50
 
-    def scan_text(text: str):
-        nonlocal x_name, x_pos, x_date, x_sal
-        for m in PLACEHOLDER.finditer(text or ""):
-            found_curly.add(m.group(1).upper())
-        if PAT_NAME.search(text or ""): x_name = True
-        if PAT_POS.search(text or ""):  x_pos  = True
-        if PAT_DATE.search(text or ""): x_date = True
-        if PAT_SAL.search(text or ""):  x_sal  = True
+def ensure_history():
+    if HISTORY_KEY not in st.session_state:
+        st.session_state[HISTORY_KEY] = []  # list of dicts
 
-    def visit_shapes(shapes):
-        for shape in shapes:
-            if getattr(shape, "has_text_frame", False) and shape.text_frame:
-                for para in shape.text_frame.paragraphs:
-                    if para.runs:
-                        scan_text("".join(run.text for run in para.runs))
-                    else:
-                        scan_text(para.text)
-            if getattr(shape, "has_table", False):
-                for r in shape.table.rows:
-                    for c in r.cells:
-                        if c.text_frame:
-                            for para in c.text_frame.paragraphs:
-                                if para.runs:
-                                    scan_text("".join(run.text for run in para.runs))
-                                else:
-                                    scan_text(para.text)
-            if isinstance(shape, GroupShape):
-                visit_shapes(shape.shapes)
+def push_history(entry: dict):
+    ensure_history()
+    st.session_state[HISTORY_KEY].append(entry)
+    # cap size
+    if len(st.session_state[HISTORY_KEY]) > MAX_HISTORY:
+        st.session_state[HISTORY_KEY] = st.session_state[HISTORY_KEY][-MAX_HISTORY:]
 
-    for slide in prs.slides:
-        visit_shapes(slide.shapes)
+def delete_history(idx: int):
+    ensure_history()
+    if 0 <= idx < len(st.session_state[HISTORY_KEY]):
+        st.session_state[HISTORY_KEY].pop(idx)
 
-    legacy = [t for t, ok in {
-        "NAME {XXXXXX}": x_name, "POSITION XXXXXXXX": x_pos,
-        "JOIN_DATE pattern": x_date, "SALARY X.XXX.XXX": x_sal
-    }.items() if ok]
-    return found_curly, legacy
+def zip_all_history() -> bytes:
+    ensure_history()
+    mem = io.BytesIO()
+    with ZipFile(mem, "w", ZIP_DEFLATED) as zf:
+        for i, item in enumerate(st.session_state[HISTORY_KEY], start=1):
+            fname = item["file_name"]
+            zf.writestr(fname, item["pptx_bytes"])
+    mem.seek(0)
+    return mem.getvalue()
 
 # ------------------------------
-# UI - back to Streamlit defaults
+# UI
 # ------------------------------
 st.set_page_config(page_title="Offer Letter Generator", page_icon="📄", layout="centered")
 st.title("Offer Letter Generator")
@@ -192,7 +174,7 @@ uploaded_file = st.file_uploader(
          "{{SALARY}}, {{JOIN_DATE}}, {{DATE}}, {{CITY}} or the legacy X tokens used in your template."
 )
 
-# Better field options
+# Inputs
 colA, colB = st.columns(2)
 with colA:
     first_name = st.text_input("First name", placeholder="Jane")
@@ -203,31 +185,13 @@ with colB:
     offer_date = st.date_input("Offer date", value=date.today())
     join_date  = st.date_input("Join date",  value=date.today())
 
-# City selector with custom option
 common_cities = ["Buenos Aires", "Córdoba", "Rosario", "Mendoza", "Other..."]
 city_pick = st.selectbox("City", options=common_cities, index=0)
 city = st.text_input("City (custom)", value="", placeholder="Type city") if city_pick == "Other..." else city_pick
 
-# Show formatted previews
-st.caption(
-    f"Preview - Candidate: **{(first_name + ' ' + last_name).strip()}**, "
-    f"Salary formatted: **{format_ars_dots(salary_num)}**, "
-    f"Offer date: **{fecha_es(offer_date)}**, Join date: **{fecha_es(join_date)}**, City: **{city}**"
-)
-
 # Extras mapping
 st.subheader("Extra placeholders (optional)")
 extras = st.data_editor([{"key": "", "value": ""}], num_rows="dynamic", hide_index=True)
-
-# Token detector
-if uploaded_file:
-    curly, legacy = detect_tokens(uploaded_file.read())
-    st.info(
-        "Placeholders detected in template: " +
-        (", ".join(sorted(curly)) if curly else "none") +
-        (" | Legacy tokens: " + ", ".join(legacy) if legacy else "")
-    )
-    uploaded_file.seek(0)  # rewind for later read
 
 # Actions
 col1, col2 = st.columns(2)
@@ -237,6 +201,7 @@ with col2:
     if st.button("Clear fields"):
         st.experimental_rerun()
 
+# Generate
 if generate_clicked:
     if not uploaded_file:
         st.warning("Please upload a PPTX template first.")
@@ -252,16 +217,21 @@ if generate_clicked:
             "DATE": fecha_es(offer_date),
             "CITY": city,
         }
+        extra_pairs = []
         for row in extras:
             k = (row.get("key") or "").strip()
             v = (row.get("value") or "").strip()
             if k:
                 mapping[k.upper()] = v
+                extra_pairs.append((k.upper(), v))
+
         try:
-            edited = render_pptx(uploaded_file.read(), mapping)
+            pptx_bytes = uploaded_file.read()
+            edited = render_pptx(pptx_bytes, mapping)
             safe_name = " ".join(full_name.split()) or "Offer Letter"
             file_name_out = f"Offer Letter - {safe_name}.pptx"
 
+            # Offer for immediate download
             st.download_button(
                 "Download Updated PPTX",
                 data=edited.getvalue(),
@@ -269,8 +239,94 @@ if generate_clicked:
                 mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
             )
             st.success(f"Done! Generated {file_name_out}.")
+
+            # Save to session history
+            push_history({
+                "ts": datetime.now(),
+                "file_name": file_name_out,
+                "pptx_bytes": edited.getvalue(),
+                "fields": {
+                    "first_name": first_name, "last_name": last_name, "position": position,
+                    "salary_num": int(salary_num), "offer_date": offer_date.isoformat(),
+                    "join_date": join_date.isoformat(), "city": city,
+                },
+                "extras": extra_pairs,
+            })
         except Exception as e:
             st.exception(e)
 
-# Optional footer logo if present
+st.divider()
+
+# ------------------------------
+# History panel
+# ------------------------------
+ensure_history()
+st.subheader(f"History (this session) — {len(st.session_state[HISTORY_KEY])} item(s)")
+
+if st.session_state[HISTORY_KEY]:
+    # Export all as ZIP
+    zip_bytes = zip_all_history()
+    st.download_button(
+        "Export all offers (ZIP)",
+        data=zip_bytes,
+        file_name="offer_letters_history.zip",
+        mime="application/zip",
+        type="secondary",
+    )
+
+    # Show newest first
+    for idx, item in reversed(list(enumerate(st.session_state[HISTORY_KEY]))):
+        meta = item["fields"]
+        ts = item["ts"].strftime("%Y-%m-%d %H:%M")
+        label = f"🗂️ {item['file_name']} · {meta['position']} · {meta['city']} · {ts}"
+        with st.expander(label, expanded=False):
+            cA, cB, cC = st.columns([1,1,1])
+            with cA:
+                st.write(f"**Candidate:** {meta['first_name']} {meta['last_name']}")
+                st.write(f"**Position:** {meta['position']}")
+                st.write(f"**City:** {meta['city']}")
+            with cB:
+                st.write(f"**Offer date:** {fecha_es(date.fromisoformat(meta['offer_date']))}")
+                st.write(f"**Join date:** {fecha_es(date.fromisoformat(meta['join_date']))}")
+                st.write(f"**Salary (ARS):** {format_ars_dots(meta['salary_num'])}")
+            with cC:
+                if item["extras"]:
+                    st.write("**Extras:**")
+                    for k, v in item["extras"]:
+                        st.write(f"- {k}: {v}")
+
+            d1, d2, d3 = st.columns([1,1,1])
+            with d1:
+                st.download_button(
+                    "Download again",
+                    data=item["pptx_bytes"],
+                    file_name=item["file_name"],
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    key=f"dl_{idx}",
+                )
+            with d2:
+                if st.button("Restore to form", key=f"restore_{idx}"):
+                    # Repopulate inputs and rerun
+                    st.session_state["First name"] = meta["first_name"]
+                    st.session_state["Last name"]  = meta["last_name"]
+                    st.session_state["Position"]   = meta["position"]
+                    st.session_state["Salary (ARS)"] = meta["salary_num"]
+                    st.session_state["Offer date"] = date.fromisoformat(meta["offer_date"])
+                    st.session_state["Join date"]  = date.fromisoformat(meta["join_date"])
+                    st.session_state["City"]       = meta["city"]
+                    # Recreate extras grid rows
+                    st.session_state["_extras_prefill"] = [{"key": k, "value": v} for k, v in item["extras"]]
+                    st.experimental_rerun()
+            with d3:
+                if st.button("Delete", key=f"del_{idx}"):
+                    delete_history(idx)
+                    st.experimental_rerun()
+else:
+    st.info("No offers generated yet. When you create one, it will appear here for quick download and restore.")
+
+# Prefill extras after restore, if present
+if "_extras_prefill" in st.session_state:
+    st.session_state.pop("_extras_prefill")  # consumed; editor cannot be updated post-render
+
+# Footer logo (optional)
 footer_logo()
