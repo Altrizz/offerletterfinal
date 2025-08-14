@@ -1,6 +1,6 @@
 # app.py — Streamlit Cloud ready
-# Default theme • Template selector (with previews) • Custom upload
-# Robust PPTX replacement (split runs, tables, groups)
+# Template selector (with previews) • Custom upload
+# Robust PPTX replacement (split runs/tables/groups)
 # Session History with thumbnails • Export ZIP • Restore
 
 import re
@@ -127,27 +127,21 @@ def load_template_bytes(label: str) -> Optional[bytes]:
 
 def pptx_doc_thumbnail(pptx_bytes: bytes) -> Optional[Tuple[str, bytes]]:
     """
-    Try to extract the document preview thumbnail from /docProps/thumbnail.jpeg|png|wmf
+    Extract document preview thumbnail from /docProps/thumbnail.jpeg|jpg|png if present.
     Returns (mime, data) or None.
     """
     try:
         with zipfile.ZipFile(BytesIO(pptx_bytes)) as zf:
-            for name in ("docProps/thumbnail.jpeg", "docProps/thumbnail.jpg",
-                         "docProps/thumbnail.png"):
+            for name in ("docProps/thumbnail.jpeg", "docProps/thumbnail.jpg", "docProps/thumbnail.png"):
                 if name in zf.namelist():
                     data = zf.read(name)
-                    mime = "image/jpeg" if name.endswith(("jpeg","jpg")) else "image/png"
+                    mime = "image/jpeg" if name.endswith(("jpeg", "jpg")) else "image/png"
                     return mime, data
     except Exception:
         pass
     return None
 
 def svg_placeholder(title: str, subtitle: str = "", w: int = 480, h: int = 270) -> bytes:
-    """
-    Create a simple SVG placeholder card and return PNG bytes via SVG data URL rendered by browser.
-    Streamlit can show SVG via markdown; for st.image we prefer PNG/JPG bytes.
-    Here we return SVG bytes and embed via <img> to keep deps minimal.
-    """
     title = (title or "").replace("&", "&amp;")
     subtitle = (subtitle or "").replace("&", "&amp;")
     svg = f"""
@@ -171,10 +165,7 @@ def svg_placeholder(title: str, subtitle: str = "", w: int = 480, h: int = 270) 
 
 def embed_svg(svg_bytes: bytes, width: int = 240):
     b64 = base64.b64encode(svg_bytes).decode("utf-8")
-    st.markdown(
-        f"<img src='data:image/svg+xml;base64,{b64}' width='{width}' />",
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"<img src='data:image/svg+xml;base64,{b64}' width='{width}' />", unsafe_allow_html=True)
 
 def first_texts_from_pptx(pptx_bytes: bytes, max_len: int = 40) -> Tuple[str, str]:
     """Best-effort: pull first two meaningful text lines from first slide."""
@@ -266,7 +257,8 @@ if templates:
             thumb = pptx_doc_thumbnail(pptx_bytes)
             if thumb:
                 mime, data = thumb
-                st.image(thumbnail_path, use_container_width=True
+                # Use new parameter name to avoid deprecation warning
+                st.image(data, caption=p.stem.replace("_", " "), use_container_width=True)
             else:
                 t1, t2 = first_texts_from_pptx(pptx_bytes)
                 embed_svg(svg_placeholder(t1, t2), width=300)
@@ -293,8 +285,11 @@ extras = st.data_editor([{"key": "", "value": ""}], num_rows="dynamic", hide_ind
 # --- Actions ---
 col1, col2 = st.columns(2)
 with col1:
-    generate_clicked = st.button("Generate Offer Letter", type="primary",
-                                 disabled=(not builtin_template_bytes and not uploaded_file))
+    generate_clicked = st.button(
+        "Generate Offer Letter",
+        type="primary",
+        disabled=(not builtin_template_bytes and not uploaded_file)
+    )
 with col2:
     if st.button("Clear fields"):
         st.experimental_rerun()
@@ -345,16 +340,12 @@ if generate_clicked:
         st.success(f"Done! Generated {file_name_out}.")
 
         # Build a thumbnail for history
-        # Try docProps thumbnail of the source (templates often have one)
-        t_mime, t_bytes = (None, None)
         doc_thumb = pptx_doc_thumbnail(source_bytes)
         if doc_thumb:
             t_mime, t_bytes = doc_thumb
         else:
-            # Fallback placeholder using name + role
-            svg = svg_placeholder(full_name or "Offer", position or "")
-            # Store SVG data URI so we can render later in history
-            t_mime, t_bytes = "image/svg+xml", svg
+            # Placeholder using name + role
+            t_mime, t_bytes = "image/svg+xml", svg_placeholder(full_name or "Offer", position or "")
 
         # Save in history
         push_history({
@@ -383,7 +374,6 @@ ensure_history()
 st.subheader(f"History (this session) — {len(st.session_state[HISTORY_KEY])} item(s)")
 
 if st.session_state[HISTORY_KEY]:
-    # Export all as ZIP
     st.download_button(
         "Export all offers (ZIP)",
         data=zip_all_history(),
@@ -397,24 +387,25 @@ if st.session_state[HISTORY_KEY]:
         meta = item["fields"]
         ts = item["ts"].strftime("%Y-%m-%d %H:%M")
 
-        # Thumbnail row
         cthumb, cmeta = st.columns([1, 3])
         with cthumb:
             if item["thumb_mime"] == "image/svg+xml":
                 embed_svg(item["thumb_bytes"], width=220)
             elif item["thumb_mime"] in ("image/png", "image/jpeg"):
-                st.image(thumbnail_path, use_container_width=True)
+                st.image(item["thumb_bytes"], use_container_width=True)
             else:
                 embed_svg(svg_placeholder("Offer Letter", f"{meta['first_name']} {meta['last_name']}"), width=220)
 
         with cmeta:
-            st.markdown(f"**{item['file_name']}**  \n"
-                        f"**{meta['first_name']} {meta['last_name']}** — {meta['position']}  \n"
-                        f"{meta['city']} · Offer: {fecha_es(date.fromisoformat(meta['offer_date']))} · "
-                        f"Join: {fecha_es(date.fromisoformat(meta['join_date']))}  \n"
-                        f"Salary: {format_ars_dots(meta['salary_num'])}  \n"
-                        f"Template: {item.get('template','N/A')}  \n"
-                        f"*Created:* {ts}")
+            st.markdown(
+                f"**{item['file_name']}**  \n"
+                f"**{meta['first_name']} {meta['last_name']}** — {meta['position']}  \n"
+                f"{meta['city']} · Offer: {fecha_es(date.fromisoformat(meta['offer_date']))} · "
+                f"Join: {fecha_es(date.fromisoformat(meta['join_date']))}  \n"
+                f"Salary: {format_ars_dots(meta['salary_num'])}  \n"
+                f"Template: {item.get('template','N/A')}  \n"
+                f"*Created:* {ts}"
+            )
 
             bcol1, bcol2, bcol3 = st.columns([1,1,1])
             with bcol1:
