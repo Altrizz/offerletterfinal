@@ -266,7 +266,7 @@ if templates:
             thumb = pptx_doc_thumbnail(pptx_bytes)
             if thumb:
                 mime, data = thumb
-                st.image(data, caption=p.stem.replace("_", " "), use_column_width=True)
+                st.image(thumbnail_path, use_container_width=True
             else:
                 t1, t2 = first_texts_from_pptx(pptx_bytes)
                 embed_svg(svg_placeholder(t1, t2), width=300)
